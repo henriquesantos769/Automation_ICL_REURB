@@ -1,0 +1,26 @@
+# Ignorar ambientes virtuais
+.venv/
+venv/
+ENV/
+env/
+
+#Ignorar os testes
+
+results_testes/
+
+# Ignorar arquivos temporários do Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Ignorar arquivos de configuração do VSCode
+.vscode/
+
+# Ignorar arquivos temporários de sistema
+.DS_Store
+Thumbs.db
+
+# Ignorar arquivos de saída temporários
+*.log
+*.tmp
