@@ -1,3 +1,4 @@
+
 # -*- coding: utf-8 -*-
 try:
     import fitz  # PyMuPDF
@@ -10,6 +11,7 @@ from pathlib import Path
 import pandas as pd
 import math
 from collections import defaultdict
+import re  # Importação adicionada para uso de expressões regulares
 
 # =========================
 # CONFIG PADRÃO
@@ -47,25 +49,160 @@ MAX_POLY_AREA = 2.5e6
 THRESH = {
     "QUADRA": 175.0,   # 160 -> 175
     "LOTE":   185.0,   # 170 -> 185
-    "IMÓVEL": 205.0,   # 190 -> 205
+    "IMÓVEL": 220.0,   # 190 -> 205
     "RES":    205.0,   # 185 -> 205
 }
 
-import colorsys
+def dist_point_to_bbox(px, py, bbox):
+    """Menor distância Euclidiana do ponto (px,py) ao retângulo bbox=(x0,y0,x1,y1)."""
+    x0, y0, x1, y1 = bbox
+    if x0 > x1: x0, x1 = x1, x0
+    if y0 > y1: y0, y1 = y1, y0
+    # clamping
+    cx = min(max(px, x0), x1)
+    cy = min(max(py, y0), y1)
+    return math.hypot(px - cx, py - cy)
 
-def _rgb01(c):
-    # aceita (float 0..1) | (int 0..255) | int 0xRRGGBB | None
-    if c is None:
-        return (0.0, 0.0, 0.0)
-    if isinstance(c, (tuple, list)) and len(c) >= 3:
-        r, g, b = c[0], c[1], c[2]
-        if any(isinstance(x, float) for x in (r,g,b)):   # já 0..1
-            return (float(r), float(g), float(b))
-        return (int(r)/255.0, int(g)/255.0, int(b)/255.0)
-    if isinstance(c, int):
-        c = c & 0xFFFFFF
-        return (((c>>16)&255)/255.0, ((c>>8)&255)/255.0, (c&255)/255.0)
-    return (0.0, 0.0, 0.0)
+
+def lot_distance(l_row, t_row, mode="bbox"):
+    """
+    Calcula distância entre um LOTE (linha 'l_row') e um alvo (linha 't_row').
+    mode:
+      - "bbox": distância ponto→bbox do LOTE (recomendado)
+      - "center": distância centro→centro (comportamento antigo)
+    """
+    if mode == "bbox":
+        return dist_point_to_bbox(t_row["x"], t_row["y"], l_row["bbox"])
+    else:
+        return math.hypot(t_row["x"] - l_row["x"], t_row["y"] - l_row["y"])
+
+
+def associate_target_first(target_df, lotes_df, max_radius, dist_mode="bbox"):
+    """
+    Prioriza o ALVO (IMÓVEL/RES): cada alvo tenta o LOTE mais próximo
+    na mesma quadra. Usa 'row_id' estável para evitar desalinhamento.
+    Retorna {lote_row_id -> texto_do_alvo_ou_None}
+    """
+    out = {}
+    if lotes_df is None or lotes_df.empty:
+        return out
+
+    # Index por quadra
+    lotes_by_q = {}
+    for _, l in lotes_df.iterrows():
+        lotes_by_q.setdefault(str(l["quadra_key"]), []).append(int(l["row_id"]))
+
+    targets_by_q = {}
+    if target_df is not None and not target_df.empty:
+        for _, t in target_df.iterrows():
+            targets_by_q.setdefault(str(t["quadra_key"]), []).append(int(t["row_id"]))
+
+    # lookup por row_id (rápido e imutável)
+    lotes_lookup   = {int(l["row_id"]): l for _, l in lotes_df.iterrows()}
+    targets_lookup = {int(t["row_id"]): t for _, t in target_df.iterrows()}
+
+    for qkey, lote_ids in lotes_by_q.items():
+        for lid in lote_ids:
+            out[lid] = None
+
+        tids = targets_by_q.get(qkey, [])
+        if not tids:
+            continue
+
+        # preferências: para cada alvo, lista de (d, lid) em ordem crescente
+        prefs = {}
+        for tid in tids:
+            trow = targets_lookup[tid]
+            cand = []
+            for lid in lote_ids:
+                lrow = lotes_lookup[lid]
+                d = lot_distance(lrow, trow, mode=dist_mode)
+                if d <= max_radius:
+                    cand.append((d, lid))
+            cand.sort(key=lambda x: x[0])
+            prefs[tid] = cand
+
+        # Gale–Shapley simplificado: alvos propõem aos lotes
+        free_t = set(tids)
+        proposed_i = {tid: 0 for tid in tids}
+        chosen = {}  # lid -> (tid, d)
+
+        while free_t:
+            tid = free_t.pop()
+            lst = prefs.get(tid, [])
+            i = proposed_i[tid]
+            assigned = False
+            while i < len(lst):
+                d, lid = lst[i]
+                proposed_i[tid] = i + 1
+                if lid not in chosen:
+                    chosen[lid] = (tid, d)  # lote livre
+                    assigned = True
+                    break
+                else:
+                    curr_tid, curr_d = chosen[lid]
+                    if d < curr_d - 1e-9:     # fica o mais perto
+                        chosen[lid] = (tid, d)
+                        # o antigo tenta o próximo
+                        if proposed_i[curr_tid] < len(prefs.get(curr_tid, [])):
+                            free_t.add(curr_tid)
+                        assigned = True
+                        break
+                i += 1
+            # se não conseguiu nenhum, segue sem alocação
+
+        # materializa para saída
+        for lid, (tid, d) in chosen.items():
+            out[lid] = targets_lookup[tid]["text"]
+
+    return out
+
+
+def associate_global_nearest(target_df, lotes_df, max_radius, dist_mode="bbox"):
+    """
+    Emparelhamento global guloso por quadra, usando distância ao LOTE.
+    dist_mode: "bbox" (padrão) ou "center".
+    Retorna: dict {lote_index -> texto_alvo_ou_None}
+    """
+    result = {}
+    if lotes_df is None or lotes_df.empty:
+        return result
+
+    by_lotes = {}
+    for lid, l in lotes_df.iterrows():
+        by_lotes.setdefault(str(l["quadra_key"]), []).append(lid)
+
+    by_targets = {}
+    if target_df is not None and not target_df.empty:
+        for tid, t in target_df.iterrows():
+            by_targets.setdefault(str(t["quadra_key"]), []).append(tid)
+
+    for qkey, lote_ids in by_lotes.items():
+        tgt_ids = by_targets.get(qkey, [])
+        for lid in lote_ids:
+            result[lid] = None
+        if not tgt_ids:
+            continue
+
+        pairs = []
+        for lid in lote_ids:
+            lrow = lotes_df.loc[lid]
+            for tid in tgt_ids:
+                trow = target_df.loc[tid]
+                d = lot_distance(lrow, trow, mode=dist_mode)
+                if d <= max_radius:
+                    pairs.append((d, lid, tid))
+
+        pairs.sort(key=lambda p: p[0])
+        taken_l, taken_t = set(), set()
+        for d, lid, tid in pairs:
+            if (lid not in taken_l) and (tid not in taken_t):
+                result[lid] = target_df.loc[tid, "text"]
+                taken_l.add(lid)
+                taken_t.add(tid)
+
+    return result
+
 
 def log_outline_widths(page):
     import numpy as np
@@ -586,8 +723,10 @@ def extract_spans(page_num, page):
                 text = s["text"].strip()
                 if not any(ch.isdigit() for ch in text):
                     continue
-
-                digits_only = "".join(ch for ch in text if ch.isdigit())
+                
+                # NOVO: Filtra para aceitar apenas strings numéricas (ou com pouca letra)
+                # O seu código já tinha uma boa tentativa, mas isso garante um filtro mais forte.
+                digits_only = re.sub(r'[^0-9]', '', text)
                 if not digits_only:
                     continue
 
@@ -601,11 +740,23 @@ def extract_spans(page_num, page):
                 if typ == "OTHER":
                     continue
 
+                # NOVO: filtro específico para o IMÓVEL (plus)
+                if typ == "IMÓVEL" and not (re.fullmatch(r'\d{5}', text)):
+                    continue
+                    
                 x0, y0, x1, y1 = s["bbox"]
                 cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
+                
+                # Ajusta a lógica para pegar o texto original em vez de `digits_only`
+                # exceto para LOTE e RES que podem ter letras no final
+                if typ == "LOTE" or typ == "RES":
+                    value = digits_only
+                else:
+                    value = text
+
                 recs.append({
                     "page": page_num,
-                    "text": digits_only,     # mantém só dígitos (LOTE 19N -> "19", RES 61A -> "61")
+                    "text": value,
                     "type": typ,
                     "x": cx, "y": cy,
                     "bbox": (x0, y0, x1, y1),
@@ -793,20 +944,39 @@ def main():
         imoveis = tag_with_regions(imoveis)
         resids  = tag_with_regions(resids)
 
+        for df in (lotes, imoveis, resids):
+            df.reset_index(drop=True, inplace=True)
+            df["row_id"] = df.index
+
         # ---------- raio fixo ou automático ----------
         MAXI = auto_radius_if_needed([imoveis, lotes], args.max_imovel)
         MAXR = auto_radius_if_needed([resids,  lotes], args.max_res)
-
-        
-        MAXI = auto_radius_if_needed([imoveis, lotes], -1)
-        MAXR = auto_radius_if_needed([resids, lotes], -1)
-
+        '''
+        # DEBUG: logar top-3 lotes mais próximos para cada IMÓVEL
+        for tid, t in imoveis.iterrows():
+            cand = []
+            same_q = lotes[lotes["quadra_key"] == t["quadra_key"]]
+            for lid, l in same_q.iterrows():
+                d = lot_distance(l, t, mode="bbox")
+                cand.append((d, lid, l["text"]))
+            cand.sort(key=lambda x: x[0])
+            print(f"[debug] IMOVEL {t['text']} @({t['x']:.1f},{t['y']:.1f}) -> {[(round(d,1), lt) for d,_,lt in cand[:3]]}")
+        '''
         # ---------- associação EXCLUSIVA por LOTE (dentro da mesma quadra) ----------
-        imovel_map = associate_unique(imoveis, lotes, MAXI)
-        resid_map  = associate_unique(resids, lotes, MAXR)
-
-        # ---------- linhas da planilha (exigindo IMÓVEL presente) ----------
-        for lid, l in lotes.iterrows():
+        imovel_map = associate_target_first(imoveis, lotes, MAXI, dist_mode="bbox")
+        resid_map  = associate_target_first(resids,  lotes, MAXR, dist_mode="bbox")
+        '''
+        # (opcional) auditoria com row_id
+        rev_imovel = {v:k for k,v in imovel_map.items() if v is not None}
+        for _, t in imoveis.iterrows():
+            lid = rev_imovel.get(t["text"])
+            msg = f"[audit] IMOVEL {t['text']} -> "
+            msg += f"LOTE {lotes.loc[lotes['row_id']==lid, 'text'].values[0]}" if lid is not None else "sem lote"
+            print(msg)
+        '''
+        # gerar linhas: SEM usar o index do pandas
+        for _, l in lotes.iterrows():
+            lid = int(l["row_id"])
             imovel_val = imovel_map.get(lid)
             if imovel_val is None:
                 continue
@@ -817,15 +987,21 @@ def main():
                 "IMÓVEL (plus)": imovel_val,
                 "nº Residencial": res_val
             })
-        
+        '''
         print(f"[p{page_num}] spans={len(df_raw)} | Q={len(quadras)} L={len(lotes)} I={len(imoveis)} R={len(resids)}")
         print(f"[p{page_num}] raioI={MAXI:.1f} raioR={MAXR:.1f}")
         print("[drawings]", len(page.get_drawings()))
+        '''
         dump_drawing_palette(page)
         log_outline_widths(page)
-
-
         segs = extract_segments_from_drawings(page)
+        
+        '''
+        print(">> DUPLICATAS DE LOTE NA MESMA QUADRA")
+        dup = lotes.groupby(["quadra_key","text"]).size()
+        print(dup[dup>1])
+        '''
+
         # ---------- debug opcional ----------
         if args.debug_regions:
             
@@ -843,7 +1019,6 @@ def main():
             print("Distribuição de LOTE por quadra:", lotes["quadra_key"].value_counts().to_dict())
 
 
-
     df = pd.DataFrame(all_rows).drop_duplicates()
     df.to_excel(out_xlsx, index=False)
     print(f"✅ Planilha gerada: {out_xlsx}")
@@ -851,5 +1026,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-
