@@ -1021,7 +1021,7 @@ def main():
 
     df = pd.DataFrame(all_rows).drop_duplicates()
     df.to_excel(out_xlsx, index=False)
-    print(f"✅ Planilha gerada: {out_xlsx}")
+    print(f"[OK] Planilha gerada: {out_xlsx}")
 
 
 if __name__ == "__main__":
