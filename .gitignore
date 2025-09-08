@@ -4,6 +4,9 @@ venv/
 ENV/
 env/
 
+
+/mapas_pdf/
+mapas_pdf/
 #Ignorar os testes
 
 results_testes/
