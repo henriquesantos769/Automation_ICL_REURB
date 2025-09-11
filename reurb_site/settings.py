@@ -31,7 +31,6 @@ CSRF_TRUSTED_ORIGINS = [
     "https://*.ngrok-free.app",
     "https://*.ngrok.app",
 ]
-# Application definition
 
 INSTALLED_APPS = [
     'django.contrib.admin',

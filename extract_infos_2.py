@@ -534,6 +534,18 @@ def poly_area(poly):
 # EXTRAÇÃO DE SPANS
 # =========================
 def extract_spans(page_num, page):
+    def normalize_alnum(text, allow_sn=True, keep_chars="/.-"):
+        t = text.strip().upper()
+        if allow_sn and re.fullmatch(r"S/?N", t):
+            return "S/N"
+        # mantém letras/números e alguns separadores comuns
+        t = re.sub(fr"[^A-Z0-9{re.escape(keep_chars)}]", "", t)
+        # normalizações simples
+        t = re.sub(r"/{2,}", "/", t)
+        t = re.sub(r"-{2,}", "-", t)
+        t = re.sub(r"\.{2,}", ".", t)
+        return t
+
     recs = []
     blocks = page.get_text("dict")["blocks"]
     for blk in blocks:
@@ -541,35 +553,41 @@ def extract_spans(page_num, page):
             continue
         for l in blk["lines"]:
             for s in l["spans"]:
-                text = s["text"].strip()
-                if not any(ch.isdigit() for ch in text):
+                raw = s["text"]
+                text = raw.strip()
+                if not text:
                     continue
 
-                digits_only = re.sub(r'[^0-9]', '', text)
-                if not digits_only:
-                    continue
-
+                # cores → tipo
                 r, g, b = int_to_rgb(s["color"])
                 typ = classify_by_nearest_color((r, g, b))
 
                 size = float(s.get("size", 0))
                 if typ == "QUADRA" and size < 9.0:
                     typ = "OTHER"
-
                 if typ == "OTHER":
                     continue
 
-                # filtro específico para IMÓVEL: exatamente 5 dígitos
-                if typ == "IMÓVEL" and not (re.fullmatch(r'\d{5}', text)):
+                # extratos úteis
+                digits_only = re.sub(r"[^0-9]", "", text)
+                alnum_norm  = normalize_alnum(text, allow_sn=True, keep_chars="/.-")
+
+                # regra rígida para IMÓVEL (plus): exatamente 5 dígitos (usar digits_only!)
+                if typ == "IMÓVEL" and not re.fullmatch(r"\d{5}", digits_only):
                     continue
+
+                # valor final por tipo:
+                if typ in ("LOTE", "RES", "QUADRA"):
+                    # aceita letras/números e S/N
+                    value = alnum_norm
+                    if not value:  # se sobrou vazio, descarta
+                        continue
+                else:
+                    # IMÓVEL mantém texto original (mas você pode optar por digits_only)
+                    value = text
 
                 x0, y0, x1, y1 = s["bbox"]
                 cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
-
-                if typ == "LOTE" or typ == "RES":
-                    value = digits_only
-                else:
-                    value = text
 
                 recs.append({
                     "page": page_num,
@@ -580,6 +598,7 @@ def extract_spans(page_num, page):
                     "size": size,
                 })
     return recs
+
 
 
 # =========================

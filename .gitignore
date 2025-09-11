@@ -7,6 +7,7 @@ env/
 
 /mapas_pdf/
 mapas_pdf/
+
 #Ignorar os testes
 
 results_testes/
@@ -27,3 +28,5 @@ Thumbs.db
 # Ignorar arquivos de saída temporários
 *.log
 *.tmp
+
+extract_infos_3.py
