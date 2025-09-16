@@ -43,8 +43,9 @@ def upload_view(request):
     if request.method == "POST":
         form = PDFUploadForm(request.POST, request.FILES)
         if not form.is_valid():
+            # ESTA LINHA É CRUCIAL PARA O DIAGNÓSTICO
+            print("ERROS DO FORMULÁRIO:", form.errors) 
             return HttpResponseBadRequest("Formulário inválido.")
-
         uploads = Path(settings.MEDIA_ROOT) / "uploads"
         results = Path(settings.MEDIA_ROOT) / "results"
         uploads.mkdir(parents=True, exist_ok=True)
@@ -57,6 +58,14 @@ def upload_view(request):
                 dst.write(chunk)
 
         xlsx_path = _run_extractor(pdf_path, results, params=form.cleaned_data)
-        return FileResponse(open(xlsx_path, "rb"), as_attachment=True, filename=xlsx_path.name)
+ 
+        # 1. Crie o objeto de resposta primeiro e guarde em uma variável
+        response = FileResponse(open(xlsx_path, "rb"), as_attachment=True, filename=xlsx_path.name)
+
+        # 2. Adicione o cookie à resposta. Este é o "sinal" que o JavaScript irá procurar.
+        response.set_cookie('fileDownloadComplete', 'true', max_age=60, path='/')
+
+        # 3. Retorne a resposta já com o cookie adicionado 
+        return response
 
     return render(request, "processor/upload.html", {"form": PDFUploadForm()})

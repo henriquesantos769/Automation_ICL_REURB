@@ -5,30 +5,161 @@
   <title>Extrair planilha do PDF</title>
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <style>
-    body{font-family:system-ui,Segoe UI,Arial,sans-serif;max-width:880px;margin:24px auto;padding:0 16px}
-    fieldset{border:1px solid #ddd;border-radius:10px;padding:16px}
-    label{display:block;margin:10px 0 6px}
-    button{padding:10px 16px;border-radius:8px;border:0;background:#111;color:#fff}
-    .grid{display:grid;grid-template-columns:repeat(2,minmax(240px,1fr));gap:10px}
+    body {
+      font-family: system-ui, Segoe UI, Arial, sans-serif;
+      max-width: 880px;
+      margin: 24px auto;
+      padding: 0 16px;
+      background-color: #f4f7f6;
+      color: #333;
+    }
+    h1 {
+      text-align: center;
+      color: #111;
+    }
+    #upload-form {
+      background: #fff;
+      padding: 32px;
+      border-radius: 12px;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+      text-align: center;
+    }
+    input[type="file"] {
+      border: 2px dashed #ddd;
+      border-radius: 10px;
+      padding: 40px;
+      width: 100%;
+      box-sizing: border-box;
+      cursor: pointer;
+      transition: border-color 0.3s, background-color 0.3s;
+    }
+    input[type="file"]::file-selector-button {
+      display: none;
+    }
+    input[type="file"]:hover {
+      border-color: #007bff;
+      background-color: #f8f9fa;
+    }
+    .hidden-params, #submit-button {
+      display: none;
+    }
+
+    /* NOVO: Estilo para a mensagem de status */
+    #status-message {
+        display: none; /* Começa escondido */
+        color: #555;
+        margin-top: 16px;
+        font-size: 0.9em;
+    }
+
+    #progress-container {
+      display: none;
+      width: 100%;
+      background-color: #e0e0e0;
+      border-radius: 10px;
+      margin-top: 8px; /* Reduzido para ficar mais perto da mensagem */
+      overflow: hidden;
+    }
+    #progress-bar {
+      width: 0%;
+      height: 24px;
+      background-color: #007bff;
+      text-align: center;
+      line-height: 24px;
+      color: white;
+      border-radius: 10px;
+      transition: width 0.4s ease;
+    }
   </style>
 </head>
 <body>
   <h1>Upload do PDF</h1>
-  <form method="post" enctype="multipart/form-data">
+
+  <form id="upload-form" method="post" enctype="multipart/form-data">
+
     {% csrf_token %}
-    <fieldset>
-      <label>PDF</label>
-      {{ form.pdf }}
-      <div class="grid">
-        <label>Min. LOTEs por polígono {{ form.min_lotes_in_poly }}</label>
-        <label>Snap tol {{ form.snap_tol }}</label>
-        <label>Área mínima ciclo {{ form.min_cycle_area }}</label>
-        <label>Raio máx. IMÓVEL (-1=auto) {{ form.max_imovel }}</label>
-        <label>Raio máx. Residencial (-1=auto) {{ form.max_res }}</label>
-        <label>Debug {{ form.debug_regions }}</label>
-      </div>
-    </fieldset>
-    <p><button type="submit">Processar e baixar XLSX</button></p>
+    {{ form.pdf }}
+
+    <p id="status-message"></p>
+
+    <div id="progress-container">
+      <div id="progress-bar">0%</div>
+    </div>
+    <div class="hidden-params">
+      {{ form.min_lotes_in_poly }}
+      {{ form.snap_tol }}
+      {{ form.min_cycle_area }}
+      {{ form.max_imovel }}
+      {{ form.max_res }}
+      {{ form.debug_regions }}
+    </div>
+    <p id="submit-button"><button type="submit" id="real-submit-btn">Processar e baixar XLSX</button></p>
   </form>
+
+
+  <script>
+  const pdfInput = document.querySelector('input[name="pdf"]');
+  const uploadForm = document.getElementById('upload-form');
+  const progressContainer = document.getElementById('progress-container');
+  const progressBar = document.getElementById('progress-bar');
+  const statusMessage = document.getElementById('status-message');
+  
+  let cookieCheckInterval;
+
+  function resetUI() {
+    progressContainer.style.display = 'none';
+    progressBar.style.width = '0%';
+    progressBar.innerHTML = '0%';
+    
+    statusMessage.style.display = 'none';
+    statusMessage.innerHTML = '';
+
+    pdfInput.value = '';
+  }
+
+  function checkDownloadCookie() {
+    if (document.cookie.includes('fileDownloadComplete=true')) {
+      clearInterval(cookieCheckInterval);
+      document.cookie = "fileDownloadComplete=; expires=Thu, 01 Jan 1970 00:00:00 UTC; path=/;";
+      
+      progressBar.style.width = '100%';
+      progressBar.innerHTML = 'Concluído!';
+      
+      setTimeout(() => {
+        resetUI();
+      }, 2000);
+    }
+  }
+
+  pdfInput.addEventListener('change', function() {
+    if (pdfInput.files.length > 0) {
+      const fileName = pdfInput.files[0].name;
+
+      statusMessage.innerHTML = `Extraindo informações de: <strong>${fileName}</strong>`;
+      statusMessage.style.display = 'block';
+      progressContainer.style.display = 'block';
+
+      let width = 1;
+      const progressAnimation = setInterval(function() {
+        if (width >= 99) {
+          clearInterval(progressAnimation);
+        } else {
+          width++;
+          progressBar.style.width = width + '%';
+          progressBar.innerHTML = width + '%';
+        }
+      }, 150);
+
+      // A MUDANÇA FINAL ESTÁ AQUI:
+      setTimeout(function() {
+        // Em vez de uploadForm.submit(), nós "clicamos" no botão real.
+        document.getElementById('real-submit-btn').click();
+      }, 100);
+
+      cookieCheckInterval = setInterval(checkDownloadCookie, 500);
+    }
+  });
+</script>
+
 </body>
 </html>
